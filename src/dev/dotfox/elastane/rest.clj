@@ -89,7 +89,7 @@
                                       (BasicHeader. header value))
                                     (merge headers auth-header)))))
 
-(defn- client-config-callback [{:keys [metrics threads auth timeout]}]
+(defn- client-config-callback [{:keys [metrics threads connections auth timeout]}]
   (let [^CredentialsProvider credentials-provider
         (when (= :basic-auth (:type auth))
           (let [{{:keys [^String user
@@ -112,7 +112,7 @@
         ^PoolingNHttpClientConnectionManager conn-manager
         (let [{:keys [max-per-route max-total]
                :or {max-per-route RestClientBuilder/DEFAULT_MAX_CONN_PER_ROUTE
-                    max-total RestClientBuilder/DEFAULT_MAX_CONN_TOTAL}} threads]
+                    max-total RestClientBuilder/DEFAULT_MAX_CONN_TOTAL}} connections]
           (doto (PoolingNHttpClientConnectionManager.
                  (DefaultConnectingIOReactor. io-reactor-config))
             (.setDefaultMaxPerRoute max-per-route)
@@ -156,10 +156,35 @@
 (defn- build-request ^Request [{:keys [request-method uri query-params body]}]
   (doto (Request. (string/upper-case (name request-method)) uri)
     (.setEntity body)
-    (.addParameters query-params)))
+    (.addParameters (reduce-kv
+                     (fn [acc k v]
+                       (assoc acc (name k) v))
+                     {}
+                     query-params))))
+
+(defn- body->entity [req object-mapper]
+  (cond-> req
+    (contains? req :body)
+    (update :body (fn [obj]
+                    (NStringEntity.
+                     (cond
+                       (map? obj)
+                       (json/write-value-as-string obj object-mapper)
+
+                       (vector? obj)
+                       (string/join (map #(str (json/write-value-as-string % object-mapper) "\n") obj)))
+                     ContentType/APPLICATION_JSON)))))
+
+(defn- entity->body [res object-mapper]
+  (cond-> res
+    (contains? res :body)
+    (update :body (fn [^ContentInputStream body]
+                    (json/read-value body object-mapper)))))
 
 (defn connect [urls
-               & {:as opts}]
+               & {:keys [object-mapper]
+                  :or {object-mapper json/keyword-keys-object-mapper}
+                  :as opts}]
   (try
     (let [urls (if (string? urls) [urls] urls)
           ^"[Lorg.apache.http.HttpHost;" http-hosts (into-array HttpHost (map ->http-host urls))
@@ -173,22 +198,28 @@
       (reify
         Client
         (request [_ req]
-          (let [req (build-request req)
+          (let [req (-> req (body->entity object-mapper) build-request)
                 ^Response res (try
                                 (.performRequest rest-client req)
                                 (catch ResponseException e
                                   (.getResponse e)))]
-            (response->map res)))
+            (-> res
+                (response->map)
+                (entity->body object-mapper))))
         (request [_ req respond raise]
-          (let [req (build-request req)
+          (let [req (-> req (body->entity object-mapper) build-request)
                 listener (proxy [ResponseListener] []
                            (onSuccess [^Response res]
-                             (respond (response->map res)))
+                             (respond (-> res
+                                          (response->map)
+                                          (entity->body object-mapper))))
                            (onFailure [^Exception exc]
                              (if (instance? ResponseException exc)
                                (let [^ResponseException response-exc exc
                                      ^Response res (.getResponse response-exc)]
-                                 (respond (response->map res)))
+                                 (respond (-> res
+                                              (response->map)
+                                              (entity->body object-mapper))))
                                (raise exc))))]
             (.performRequestAsync rest-client req listener)))
 
@@ -211,35 +242,6 @@
     Closeable
     (close [_] (.close client))))
 
-(defn- body->entity [req object-mapper]
-  (cond-> req
-    (contains? req :body)
-    (update :body (fn [obj]
-                    (NStringEntity.
-                     (cond
-                       (map? obj)
-                       (json/write-value-as-string obj object-mapper)
-
-                       (vector? obj)
-                       (string/join (map #(str (json/write-value-as-string % object-mapper) "\n") obj)))
-                     ContentType/APPLICATION_JSON)))))
-
-(defn default-middleware
-  ([handler] (default-middleware handler json/keyword-keys-object-mapper))
-  ([handler object-mapper]
-   (fn
-     ([req]
-      (let [res (handler (body->entity req object-mapper))]
-        (update res :body (fn [^ContentInputStream body]
-                            (json/read-value body object-mapper)))))
-     ([req respond raise]
-      (handler (body->entity req object-mapper)
-               (fn [res]
-                 (respond
-                  (update res :body (fn [^ContentInputStream body]
-                                      (json/read-value body object-mapper)))))
-               raise)))))
-
 (comment
 
   (import '(io.micrometer.prometheus PrometheusMeterRegistry PrometheusConfig))
@@ -247,30 +249,32 @@
   (def pmr (PrometheusMeterRegistry. PrometheusConfig/DEFAULT))
 
   (def cl
-    (wrap-middleware (connect "http://localhost:9207/"
-                              {:auth {:type :basic-auth
-                                      :params {:user "elastic"
-                                               :pwd "ductile"}}
-                               ;; :threads {:io-dispatch 2
-                               ;;           :max-per-route 4
-                               ;;           :max-total 10}
-                               :metrics {:registry pmr
-                                         :tags []
-                                         :name "ESClient"}})
-                     default-middleware))
+    (connect ["http://localhost:9207/" "http://localhost:9205/"]
+             {:auth {:type :basic-auth
+                     :params {:user "elastic"
+                              :pwd "ductile"}}
+              :connections {:max-per-route 100
+                            :max-total 100}
+              :metrics {:registry pmr
+                        :tags []
+                        :name "ESClient"}}))
 
   (.close cl)
+
+  (client/request cl {:request-method "GET"
+                      :uri "/_nodes"})
 
   (time
    (dotimes [i 10000]
      (client/request cl
                      {:request-method "GET"
-                      :uri "/"
-                      :query-params {}}
+                      :uri "/_cluster/health"}
                      (fn [_]
                        (when (= 0 (mod i 1000))
                          (println "====")
                          (println (.scrape pmr))))
                      identity)))
+
+  (println (.scrape pmr))
 
   )
