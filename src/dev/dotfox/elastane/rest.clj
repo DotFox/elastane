@@ -47,8 +47,8 @@
                port
                protocol)))
 
-(defn- ->tag [[^String key ^String value]]
-  (Tag/of key value))
+(defn- ->tag [[key ^String value]]
+  (Tag/of (name key) value))
 
 (defn- ->tags ^Tags [tags]
   (let [^"[Lio.micrometer.core.instrument.Tag;" tags (into-array Tag (map ->tag tags))]
@@ -256,7 +256,7 @@
               :connections {:max-per-route 100
                             :max-total 100}
               :metrics {:registry pmr
-                        :tags []
+                        :tags {:app "SAMPLE"}
                         :name "ESClient"}}))
 
   (.close cl)
