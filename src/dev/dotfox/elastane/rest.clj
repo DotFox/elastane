@@ -7,7 +7,7 @@
                                           Tags)
            (io.micrometer.core.instrument.binder.httpcomponents PoolingHttpClientConnectionManagerMetricsBinder
                                                                 MicrometerHttpClientInterceptor)
-           (java.io Closeable)
+           (java.io ByteArrayOutputStream Closeable)
            (java.net URL)
            (java.nio.charset StandardCharsets)
            (java.util Base64)
@@ -26,7 +26,7 @@
            (org.apache.http.impl.nio.reactor DefaultConnectingIOReactor)
            (org.apache.http.message BasicHeader)
            (org.apache.http.nio.entity ContentInputStream
-                                       NStringEntity)
+                                       NByteArrayEntity)
            (org.elasticsearch.client RestClientBuilder
                                      RestClientBuilder$HttpClientConfigCallback
                                      RestClient
@@ -36,6 +36,9 @@
                                      ResponseListener)))
 
 (set! *warn-on-reflection* true)
+
+(def ^:private ^ContentType json-content-type ContentType/APPLICATION_JSON)
+(def ^:private ^ContentType ndjson-content-type (ContentType/create "application/x-ndjson" StandardCharsets/UTF_8))
 
 (defn- get-port [^URL url]
   (let [p (.getPort url)]
@@ -172,16 +175,16 @@
   (cond-> req
     (contains? req :body)
     (update :body (fn [obj]
-                    (cond
-                      (map? obj)
-                      (NStringEntity.
-                       (json/write-value-as-string obj object-mapper)
-                       ContentType/APPLICATION_JSON)
+                    (let [baos (ByteArrayOutputStream.)]
+                      (cond
+                        (map? obj)
+                        (json/write-value baos obj object-mapper)
 
-                      (vector? obj)
-                      (NStringEntity.
-                       (string/join (map #(str (json/write-value-as-string % object-mapper) "\n") obj))
-                       (ContentType/create "application/x-ndjson" StandardCharsets/UTF_8)))))))
+                        (vector? obj)
+                        (doseq [v obj]
+                          (json/write-value baos v object-mapper)
+                          (.write baos (.getBytes "\n" StandardCharsets/UTF_8))))
+                      (NByteArrayEntity. (.toByteArray baos) (if (map? obj) json-content-type ndjson-content-type)))))))
 
 (defn- entity->body [res object-mapper]
   (cond-> res
@@ -269,8 +272,17 @@
 
   (.close conn)
 
+  (client/request conn {:request-method "PUT"
+                        :uri "/new-index"
+                        :body {:settings {:index {:number_of_shards 3
+                                                  :number_of_replicas 2}}}})
+
   (client/request conn {:request-method "GET"
-                        :uri "/_nodes"})
+                        :uri "/new-index/_msearch"
+                        :body [{}
+                               {:query {:match {:message "this is a test"}}}
+                               {:index "new-index-2"}
+                               {:query {:match_all {}}}]})
 
   (time
    (dotimes [i 10000]
