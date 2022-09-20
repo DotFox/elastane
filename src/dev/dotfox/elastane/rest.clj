@@ -1,33 +1,39 @@
 (ns dev.dotfox.elastane.rest
-  (:require [dev.dotfox.elastane.client :as client :refer [Client]]
-            [jsonista.core :as json]
-            [clojure.string :as string])
-  (:import (org.elasticsearch.client RestClientBuilder
+  (:require [clojure.string :as string]
+            [dev.dotfox.elastane.client :as client :refer [Client]]
+            [jsonista.core :as json])
+  (:import (io.micrometer.core.instrument MeterRegistry
+                                          Tag
+                                          Tags)
+           (io.micrometer.core.instrument.binder.httpcomponents PoolingHttpClientConnectionManagerMetricsBinder
+                                                                MicrometerHttpClientInterceptor)
+           (java.io Closeable)
+           (java.net URL)
+           (java.nio.charset StandardCharsets)
+           (java.util Base64)
+           (java.util.function Function)
+           (org.apache.http HttpHost
+                            Header
+                            HttpRequest)
+           (org.apache.http.auth AuthScope
+                                 UsernamePasswordCredentials)
+           (org.apache.http.client CredentialsProvider)
+           (org.apache.http.entity ContentType)
+           (org.apache.http.impl.client BasicCredentialsProvider)
+           (org.apache.http.impl.nio.client HttpAsyncClientBuilder)
+           (org.apache.http.impl.nio.conn PoolingNHttpClientConnectionManager)
+           (org.apache.http.impl.nio.reactor IOReactorConfig)
+           (org.apache.http.impl.nio.reactor DefaultConnectingIOReactor)
+           (org.apache.http.message BasicHeader)
+           (org.apache.http.nio.entity ContentInputStream
+                                       NStringEntity)
+           (org.elasticsearch.client RestClientBuilder
                                      RestClientBuilder$HttpClientConfigCallback
                                      RestClient
                                      Request
                                      Response
                                      ResponseException
-                                     ResponseListener)
-           (org.apache.http HttpHost Header HttpRequest)
-           (org.apache.http.message BasicHeader)
-           (org.apache.http.client CredentialsProvider)
-           (org.apache.http.auth AuthScope UsernamePasswordCredentials)
-           (org.apache.http.impl.client BasicCredentialsProvider)
-           (org.apache.http.impl.nio.client HttpAsyncClientBuilder)
-           (org.apache.http.impl.nio.reactor IOReactorConfig)
-           (org.apache.http.impl.nio.conn PoolingNHttpClientConnectionManager)
-           (org.apache.http.impl.nio.reactor DefaultConnectingIOReactor)
-           (org.apache.http.nio.entity ContentInputStream NStringEntity)
-           (org.apache.http.entity ContentType)
-           (java.net URL)
-           (java.nio.charset StandardCharsets)
-           (java.io Closeable)
-           (java.util Base64)
-           (java.util.function Function)
-           (io.micrometer.core.instrument MeterRegistry Tag Tags)
-           (io.micrometer.core.instrument.binder.httpcomponents PoolingHttpClientConnectionManagerMetricsBinder
-                                                                MicrometerHttpClientInterceptor)))
+                                     ResponseListener)))
 
 (set! *warn-on-reflection* true)
 
@@ -166,14 +172,16 @@
   (cond-> req
     (contains? req :body)
     (update :body (fn [obj]
-                    (NStringEntity.
-                     (cond
-                       (map? obj)
+                    (cond
+                      (map? obj)
+                      (NStringEntity.
                        (json/write-value-as-string obj object-mapper)
+                       ContentType/APPLICATION_JSON)
 
-                       (vector? obj)
-                       (string/join (map #(str (json/write-value-as-string % object-mapper) "\n") obj)))
-                     ContentType/APPLICATION_JSON)))))
+                      (vector? obj)
+                      (NStringEntity.
+                       (string/join (map #(str (json/write-value-as-string % object-mapper) "\n") obj))
+                       (ContentType/create "application/x-ndjson" StandardCharsets/UTF_8)))))))
 
 (defn- entity->body [res object-mapper]
   (cond-> res
@@ -248,8 +256,8 @@
 
   (def pmr (PrometheusMeterRegistry. PrometheusConfig/DEFAULT))
 
-  (def cl
-    (connect ["http://localhost:9207/" "http://localhost:9205/"]
+  (def conn
+    (connect "http://localhost:9207/"
              {:auth {:type :basic-auth
                      :params {:user "elastic"
                               :pwd "ductile"}}
@@ -259,14 +267,14 @@
                         :tags {:app "SAMPLE"}
                         :name "ESClient"}}))
 
-  (.close cl)
+  (.close conn)
 
-  (client/request cl {:request-method "GET"
-                      :uri "/_nodes"})
+  (client/request conn {:request-method "GET"
+                        :uri "/_nodes"})
 
   (time
    (dotimes [i 10000]
-     (client/request cl
+     (client/request conn
                      {:request-method "GET"
                       :uri "/_cluster/health"}
                      (fn [_]
