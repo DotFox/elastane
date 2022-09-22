@@ -1,5 +1,6 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  :deps {org.elasticsearch.client/elasticsearch-rest-client {:mvn/version "8.4.1"}
         io.micrometer/micrometer-core {:mvn/version "1.9.4"}
         io.micrometer/micrometer-registry-prometheus {:mvn/version "1.9.4"}
-        metosin/jsonista {:mvn/version "0.3.6"}}}
+        metosin/jsonista {:mvn/version "0.3.6"}
+        metosin/malli {:mvn/version "0.8.9"}}}

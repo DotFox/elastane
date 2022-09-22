@@ -194,7 +194,7 @@
 
 (defn connect [urls
                & {:keys [object-mapper]
-                  :or {object-mapper json/keyword-keys-object-mapper}
+                  :or {object-mapper json/default-object-mapper}
                   :as opts}]
   (try
     (let [urls (if (string? urls) [urls] urls)
@@ -272,8 +272,8 @@
 
   (.close conn)
 
-  (client/request conn {:request-method "PUT"
-                        :uri "/new-index"
+  (client/request conn {:request-method "GET"
+                        :uri "/_nodes/stats"
                         :body {:settings {:index {:number_of_shards 3
                                                   :number_of_replicas 2}}}})
 
